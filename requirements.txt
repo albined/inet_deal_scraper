@@ -1,0 +1,6 @@
+twitchio
+requests
+python-dotenv
+beautifulsoup4
+cloudscraper
+discord.py
