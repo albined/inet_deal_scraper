@@ -1,29 +1,35 @@
 # Multi-stage build for smaller final image
 # Stage 1: Builder - Install dependencies
-FROM python:3.11-slim as builder
+FROM python:3.11-alpine as builder
 
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Install build dependencies for compiling Python packages
+RUN apk add --no-cache \
     gcc \
-    python3-dev && \
-    rm -rf /var/lib/apt/lists/*
+    musl-dev \
+    python3-dev \
+    libffi-dev \
+    openssl-dev \
+    cargo \
+    rust
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Stage 2: Runtime - Create minimal runtime image
-FROM python:3.11-slim
+FROM python:3.11-alpine
 
 # Set working directory
 WORKDIR /app
 
+# Install runtime dependencies only
+RUN apk add --no-cache libffi openssl
+
 # Create non-root user for security
-RUN useradd -m -u 1000 botuser && \
+RUN adduser -D -u 1000 botuser && \
     chown -R botuser:botuser /app
 
 # Copy Python dependencies from builder stage
