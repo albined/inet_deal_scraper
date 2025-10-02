@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+experiment*.ipynb
+experimentation*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project specific
+archive/
+parts_for_main_dont_use_this_file.py
+example_usage.py
+test.html
+
+# Documentation
+README.md
+*.md
+
+# Logs
+*.log

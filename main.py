@@ -240,8 +240,29 @@ async def main():
         password=inet_password
     )
     
-    # Initialize Discord bot (pass monitor reference for !links command)
-    discord_bot = InetDiscordBot(inet_monitor=inet_monitor)
+    # Shared state for status tracking
+    status_state = {
+        'is_live': False,
+        'is_monitoring': False,
+        'last_online': None,
+        'channel_name': twitch_channel
+    }
+    
+    # Status provider function for Discord bot
+    def get_status():
+        """Provide current bot status information"""
+        return {
+            'is_live': status_state['is_live'],
+            'is_monitoring': status_state['is_monitoring'],
+            'last_online': status_state['last_online'],
+            'channel_name': status_state['channel_name']
+        }
+    
+    # Initialize Discord bot (pass monitor reference and status provider)
+    discord_bot = InetDiscordBot(
+        inet_monitor=inet_monitor,
+        status_provider=get_status
+    )
     
     # Start Discord bot in background
     discord_task = asyncio.create_task(discord_bot.start())
@@ -271,9 +292,16 @@ async def main():
         while True:
             # Check if channel is live
             is_live = stream_checker.is_channel_live(twitch_channel)
+            
+            # Update status state
+            status_state['is_live'] = is_live
 
             if is_live and not was_live:
                 print(f'\n🔴 {twitch_channel} is now LIVE! Starting chat monitoring...\n')
+                
+                # Update last online timestamp
+                from datetime import datetime
+                status_state['last_online'] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
                 
                 # Create and start Twitch bot
                 twitch_bot = InetMonitorBot(
@@ -288,6 +316,7 @@ async def main():
                 # Start the Twitch bot
                 twitch_bot_task = asyncio.create_task(twitch_bot.start())
                 was_live = True
+                status_state['is_monitoring'] = True
                 
             elif not is_live and was_live:
                 print(f'\n⚫ {twitch_channel} went OFFLINE. Stopping chat monitoring...\n')
@@ -307,6 +336,7 @@ async def main():
                 twitch_bot = None
                 twitch_bot_task = None
                 was_live = False
+                status_state['is_monitoring'] = False
                 
             elif is_live:
                 # Channel is still live

@@ -15,7 +15,7 @@ class InetDiscordBot:
     - Can be toggled on/off without restarting
     """
     
-    def __init__(self, token: Optional[str] = None, channel_id: Optional[int] = None, inet_monitor=None):
+    def __init__(self, token: Optional[str] = None, channel_id: Optional[int] = None, inet_monitor=None, status_provider=None):
         """
         Initialize the Discord bot
         
@@ -23,6 +23,7 @@ class InetDiscordBot:
             token: Discord bot token (loads from .env if not provided)
             channel_id: Discord channel ID to post to (loads from .env if not provided)
             inet_monitor: Reference to InetProductMonitor instance (optional)
+            status_provider: Callable that returns status information (optional)
         """
         # Load environment variables if not provided
         if token is None or channel_id is None:
@@ -34,6 +35,7 @@ class InetDiscordBot:
         self.channel_id = channel_id
         self.enabled = True  # Bot starts enabled
         self.inet_monitor = inet_monitor  # Reference to monitor for checking pages
+        self.status_provider = status_provider  # Function to get additional status info
         
         # Set up Discord bot with message content intent
         intents = discord.Intents.default()
@@ -78,9 +80,53 @@ class InetDiscordBot:
         
         @self.bot.command(name='status')
         async def status_command(ctx):
-            """Check if the bot is enabled or disabled"""
-            status = "**ENABLED** ✅" if self.enabled else "**DISABLED** ⏸️"
-            await ctx.send(f"Current status: {status}")
+            """Check bot status and system information"""
+            # Create an embed for better formatting
+            embed = discord.Embed(
+                title="🤖 Bot Status",
+                color=discord.Color.green() if self.enabled else discord.Color.red()
+            )
+            
+            # Bot notification status
+            bot_status = "**ENABLED** ✅" if self.enabled else "**DISABLED** ⏸️"
+            embed.add_field(name="Notifications", value=bot_status, inline=False)
+            
+            # Get additional status from provider if available
+            if self.status_provider:
+                try:
+                    status_info = self.status_provider()
+                    
+                    # Twitch channel status
+                    if 'is_live' in status_info:
+                        twitch_status = "🔴 **LIVE**" if status_info['is_live'] else "⚫ **OFFLINE**"
+                        embed.add_field(name="Twitch Channel", value=twitch_status, inline=True)
+                    
+                    # Last seen online
+                    if 'last_online' in status_info and status_info['last_online']:
+                        embed.add_field(name="Last Online", value=status_info['last_online'], inline=True)
+                    
+                    # Monitoring status
+                    if 'is_monitoring' in status_info:
+                        monitoring = "✅ Active" if status_info['is_monitoring'] else "⏸️ Paused"
+                        embed.add_field(name="Chat Monitoring", value=monitoring, inline=True)
+                    
+                except Exception as e:
+                    print(f"Error getting status info: {e}")
+            
+            # Product tracking info
+            if self.inet_monitor:
+                pages_count = len(self.inet_monitor.pages_to_check)
+                product_count = self.inet_monitor.get_product_count()
+                
+                embed.add_field(name="📋 Campaigns", value=str(pages_count), inline=True)
+                embed.add_field(name="📦 Products Tracked", value=str(product_count), inline=True)
+                embed.add_field(name="📅 Tracking Date", value=str(self.inet_monitor.current_date), inline=True)
+            
+            # Add timestamp
+            embed.timestamp = discord.utils.utcnow()
+            embed.set_footer(text="Bot Status")
+            
+            await ctx.send(embed=embed)
         
         @self.bot.command(name='help', aliases=['h', '?'])
         async def help_command(ctx):
