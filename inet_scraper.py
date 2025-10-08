@@ -73,6 +73,8 @@ class InetProductMonitor:
             self.products = {}
             self.pages_to_check = []
             self.current_date = today
+            print("🔄 Re-authenticating with fresh session...")
+            self._login()
     
     def _fetch_page(self, url: str) -> str:
         """Fetch HTML content from a URL"""
