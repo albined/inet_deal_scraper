@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 from typing import Dict, Optional
 import os
@@ -11,7 +12,7 @@ class InetDiscordBot:
     
     Features:
     - Posts products with embedded images and formatted information
-    - Commands: !start, !stop, !status, !help (!h, !?)
+    - Slash commands: /start, /stop, /status, /help, /links, /resend, /clear
     - Can be toggled on/off without restarting
     """
     
@@ -40,7 +41,7 @@ class InetDiscordBot:
         # Set up Discord bot with message content intent
         intents = discord.Intents.default()
         intents.message_content = True
-        self.bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+        self.bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
         
         # Register event handlers
         self._register_events()
@@ -54,32 +55,39 @@ class InetDiscordBot:
             print(f'✓ Discord bot logged in as {self.bot.user}')
             print(f'✓ Target channel ID: {self.channel_id}')
             print(f'✓ Bot is {"ENABLED" if self.enabled else "DISABLED"}')
+            
+            # Sync slash commands
+            try:
+                synced = await self.bot.tree.sync()
+                print(f'✓ Synced {len(synced)} slash command(s)')
+            except Exception as e:
+                print(f'❌ Error syncing commands: {e}')
     
     def _register_commands(self):
-        """Register bot commands"""
+        """Register bot slash commands"""
         
-        @self.bot.command(name='start')
-        async def start_command(ctx):
+        @self.bot.tree.command(name='start', description='Enable product notifications')
+        async def start_command(interaction: discord.Interaction):
             """Enable the bot to send product notifications"""
             if self.enabled:
-                await ctx.send("✓ Bot is already **enabled** and sending notifications!")
+                await interaction.response.send_message("✓ Bot is already **enabled** and sending notifications!")
             else:
                 self.enabled = True
-                await ctx.send("✅ Bot **enabled**! Will now send product notifications.")
+                await interaction.response.send_message("✅ Bot **enabled**! Will now send product notifications.")
                 print("Bot enabled by user command")
         
-        @self.bot.command(name='stop')
-        async def stop_command(ctx):
+        @self.bot.tree.command(name='stop', description='Disable product notifications')
+        async def stop_command(interaction: discord.Interaction):
             """Disable the bot from sending product notifications"""
             if not self.enabled:
-                await ctx.send("✓ Bot is already **disabled**.")
+                await interaction.response.send_message("✓ Bot is already **disabled**.")
             else:
                 self.enabled = False
-                await ctx.send("⏸️ Bot **disabled**. Product notifications paused.")
+                await interaction.response.send_message("⏸️ Bot **disabled**. Product notifications paused.")
                 print("Bot disabled by user command")
         
-        @self.bot.command(name='status')
-        async def status_command(ctx):
+        @self.bot.tree.command(name='status', description='Check bot status and system information')
+        async def status_command(interaction: discord.Interaction):
             """Check bot status and system information"""
             # Create an embed for better formatting
             embed = discord.Embed(
@@ -126,10 +134,10 @@ class InetDiscordBot:
             embed.timestamp = discord.utils.utcnow()
             embed.set_footer(text="Bot Status")
             
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed)
         
-        @self.bot.command(name='help', aliases=['h', '?'])
-        async def help_command(ctx):
+        @self.bot.tree.command(name='help', description='Show help information')
+        async def help_command(interaction: discord.Interaction):
             """Show help information"""
             help_text = """
 **🤖 Inet Product Drop Bot**
@@ -137,13 +145,13 @@ class InetDiscordBot:
 I monitor Inet.se for new products and deals, and post them here automatically!
 
 **Commands:**
-• `!start` - Enable product notifications
-• `!stop` - Disable product notifications
-• `!status` - Check if bot is enabled/disabled
-• `!links` - Show all campaign links being monitored
-• `!resend` - Resend all tracked products
-• `!clear [amount]` - Clear messages (default: 100)
-• `!help` (or `!h`, `!?`) - Show this help message
+• `/start` - Enable product notifications
+• `/stop` - Disable product notifications
+• `/status` - Check if bot is enabled/disabled
+• `/links` - Show all campaign links being monitored
+• `/resend` - Resend all tracked products
+• `/clear [amount]` - Clear messages (default: 100)
+• `/help` - Show this help message
 
 **How it works:**
 When enabled, I'll automatically post new products with:
@@ -154,20 +162,20 @@ When enabled, I'll automatically post new products with:
 
 Stay tuned for great deals! 🎉
             """
-            await ctx.send(help_text)
+            await interaction.response.send_message(help_text)
         
-        @self.bot.command(name='links')
-        async def links_command(ctx):
+        @self.bot.tree.command(name='links', description='Show all campaign links being monitored')
+        async def links_command(interaction: discord.Interaction):
             """Show all campaign links being monitored"""
             if not self.inet_monitor:
-                await ctx.send("❌ Monitor not connected.")
+                await interaction.response.send_message("❌ Monitor not connected.")
                 return
             
             pages = self.inet_monitor.pages_to_check
             product_count = self.inet_monitor.get_product_count()
             
             if not pages:
-                await ctx.send("📭 No campaign links are currently being monitored.\n\n*Links are added automatically when posted in the Inet Twitch chat!*")
+                await interaction.response.send_message("📭 No campaign links are currently being monitored.\n\n*Links are added automatically when posted in the Inet Twitch chat!*")
                 return
             
             # Create a formatted list of links
@@ -183,57 +191,65 @@ Stay tuned for great deals! 🎉
             
             links_text += f"\n*Scraping these pages every {os.getenv('SCRAPE_INTERVAL', '120')} seconds*"
             
-            await ctx.send(links_text)
+            await interaction.response.send_message(links_text)
         
-        @self.bot.command(name='clear')
-        async def clear_command(ctx, amount: int = 100):
+        @self.bot.tree.command(name='clear', description='Clear messages in the current channel')
+        @app_commands.describe(amount='Number of messages to clear (default: 100, max: 1000)')
+        async def clear_command(interaction: discord.Interaction, amount: int = 100):
             """Clear messages in the current channel"""
             try:
                 # Check if bot has permission to manage messages
-                if not ctx.channel.permissions_for(ctx.guild.me).manage_messages:
-                    await ctx.send("❌ I don't have permission to delete messages! Please grant me 'Manage Messages' permission.")
+                if not interaction.channel.permissions_for(interaction.guild.me).manage_messages:
+                    await interaction.response.send_message("❌ I don't have permission to delete messages! Please grant me 'Manage Messages' permission.", ephemeral=True)
                     return
                 
                 # Limit amount to prevent abuse
                 if amount > 1000:
-                    await ctx.send("⚠️ Can only clear up to 1000 messages at a time.")
+                    await interaction.response.send_message("⚠️ Can only clear up to 1000 messages at a time.", ephemeral=True)
                     amount = 1000
                 
-                # Delete messages
-                deleted = await ctx.channel.purge(limit=amount + 1)  # +1 to include the command message
+                # Defer the response since this might take a while
+                await interaction.response.defer(ephemeral=True)
                 
-                # Send confirmation (will auto-delete after 5 seconds)
-                confirmation = await ctx.send(f"✅ Cleared {len(deleted) - 1} message(s)!")
-                await asyncio.sleep(5)
-                await confirmation.delete()
+                # Delete messages
+                deleted = await interaction.channel.purge(limit=amount)
+                
+                # Send confirmation
+                await interaction.followup.send(f"✅ Cleared {len(deleted)} message(s)!", ephemeral=True)
                 
             except discord.Forbidden:
-                await ctx.send("❌ I don't have permission to delete messages!")
+                await interaction.response.send_message("❌ I don't have permission to delete messages!", ephemeral=True)
             except Exception as e:
-                await ctx.send(f"❌ Error clearing messages: {e}")
+                if interaction.response.is_done():
+                    await interaction.followup.send(f"❌ Error clearing messages: {e}", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"❌ Error clearing messages: {e}", ephemeral=True)
         
-        @self.bot.command(name='resend')
-        async def resend_command(ctx):
+        @self.bot.tree.command(name='resend', description='Resend all currently tracked products')
+        async def resend_command(interaction: discord.Interaction):
             """Resend all currently tracked products"""
             if not self.inet_monitor:
-                await ctx.send("❌ Monitor not connected.")
+                await interaction.response.send_message("❌ Monitor not connected.", ephemeral=True)
                 return
             
             all_products = self.inet_monitor.get_all_products()
             
             if not all_products:
-                await ctx.send("📭 No products tracked yet!\n\n*Products are tracked when campaign links are posted in Twitch chat.*")
+                await interaction.response.send_message("📭 No products tracked yet!\n\n*Products are tracked when campaign links are posted in Twitch chat.*", ephemeral=True)
                 return
             
-            # Ask for confirmation
-            await ctx.send(f"📤 Resending **{len(all_products)}** product(s)...\n*This may take a while!*")
+            # Defer the response since this will take a while
+            await interaction.response.defer()
+            
+            # Send initial message
+            await interaction.followup.send(f"📤 Resending **{len(all_products)}** product(s)...\n*This may take a while!*")
             
             # Send all products
             sent_count = 0
             for product_id, product in all_products.items():
                 try:
                     embed = self._create_product_embed(product)
-                    await ctx.channel.send(embed=embed)
+                    await interaction.channel.send(embed=embed)
                     sent_count += 1
                     
                     # Delay to avoid rate limiting
@@ -242,7 +258,7 @@ Stay tuned for great deals! 🎉
                 except Exception as e:
                     print(f"   ❌ Error resending product {product_id}: {e}")
             
-            await ctx.send(f"✅ Resent {sent_count} product(s)!")
+            await interaction.followup.send(f"✅ Resent {sent_count} product(s)!")
     
     def _create_product_embed(self, product: Dict) -> discord.Embed:
         """
