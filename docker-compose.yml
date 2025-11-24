@@ -2,7 +2,7 @@ services:
   inet-bot:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.minimal
     container_name: inet-product-monitor
     restart: unless-stopped
     

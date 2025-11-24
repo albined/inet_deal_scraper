@@ -41,6 +41,7 @@ ENV PATH=/home/botuser/.local/bin:$PATH
 # Copy application code
 COPY --chown=botuser:botuser inet_scraper.py .
 COPY --chown=botuser:botuser discord_bot.py .
+COPY --chown=botuser:botuser subscriber_db.py .
 COPY --chown=botuser:botuser main.py .
 
 # Switch to non-root user
