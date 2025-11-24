@@ -19,7 +19,7 @@ class InetDiscordBot:
     - Persistent subscriber storage across restarts
     """
     
-    def __init__(self, token: Optional[str] = None, inet_monitor=None, youtube_monitor=None, status_provider=None, db_path: str = "subscribers.json"):
+    def __init__(self, token: Optional[str] = None, inet_monitor=None, youtube_monitor=None, status_provider=None, db_path: str = "data/subscribers.json"):
         """
         Initialize the Discord bot
         
@@ -28,7 +28,7 @@ class InetDiscordBot:
             inet_monitor: Reference to InetProductMonitor instance (optional)
             youtube_monitor: Reference to YouTubeMonitor instance (optional)
             status_provider: Callable that returns status information (optional)
-            db_path: Path to subscriber database file (default: subscribers.json)
+            db_path: Path to subscriber database file (default: data/subscribers.json)
         """
         # Load environment variables if not provided
         if token is None:
@@ -138,6 +138,33 @@ class InetDiscordBot:
                     if 'is_monitoring' in status_info:
                         monitoring = "✅ Active" if status_info['is_monitoring'] else "⏸️ Paused"
                         embed.add_field(name="Chat Monitoring", value=monitoring, inline=True)
+
+                    # YouTube monitoring status (if provided)
+                    if 'youtube_monitoring' in status_info:
+                        yt_monitoring = "✅ Active" if status_info['youtube_monitoring'] else "⏸️ Paused"
+                        embed.add_field(name="YouTube Monitoring", value=yt_monitoring, inline=True)
+
+                    # Active YouTube streams
+                    if 'youtube_active_streams' in status_info:
+                        streams = status_info['youtube_active_streams'] or []
+                        if streams:
+                            # Show up to 5 active stream links
+                            display_list = []
+                            for vid in streams[:5]:
+                                # If vid already looks like a full URL, show as-is; otherwise build watch URL
+                                if vid.startswith('http'):
+                                    display_list.append(vid)
+                                else:
+                                    display_list.append(f"https://www.youtube.com/watch?v={vid}")
+
+                            display_text = "\n".join(display_list)
+                            embed.add_field(name="📺 YouTube Streams", value=display_text, inline=False)
+                        else:
+                            embed.add_field(name="📺 YouTube Streams", value="No active streams", inline=True)
+
+                    # Additional YouTube info (seen links count / date)
+                    if 'youtube_seen_links' in status_info:
+                        embed.add_field(name="🔗 YouTube Seen Links", value=str(status_info['youtube_seen_links']), inline=True)
                     
                 except Exception as e:
                     print(f"Error getting status info: {e}")

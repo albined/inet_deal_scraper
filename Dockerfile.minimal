@@ -24,8 +24,7 @@ FROM python:3.11-alpine
 WORKDIR /app
 
 # Install only runtime dependencies
-RUN apk add --no-cache libffi openssl && \
-    adduser -D -u 1000 botuser
+RUN apk add --no-cache libffi openssl
 
 # Copy wheels and install (smaller than copying .local)
 COPY --from=builder /wheels /wheels
@@ -33,9 +32,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
     rm -rf /wheels
 
 # Copy application code
-COPY --chown=botuser:botuser *.py ./
-
-USER botuser
+COPY *.py ./
 
 ENV PYTHONUNBUFFERED=1
 

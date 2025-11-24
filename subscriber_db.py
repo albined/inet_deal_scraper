@@ -19,13 +19,18 @@ class SubscriberDatabase:
     and persists them across bot restarts.
     """
     
-    def __init__(self, db_path: str = "subscribers.json"):
+    def __init__(self, db_path: str = "data/subscribers.json"):
         """
         Initialize the subscriber database
         
         Args:
             db_path: Path to the JSON file for storing subscribers
         """
+        # Ensure the data directory exists
+        data_dir = os.path.dirname(db_path)
+        if data_dir:
+            os.makedirs(data_dir, exist_ok=True)
+        
         self.db_path = db_path
         self.subscribers: Set[int] = set()
         self._load()

@@ -28,24 +28,17 @@ WORKDIR /app
 # Install runtime dependencies only
 RUN apk add --no-cache libffi openssl
 
-# Create non-root user for security
-RUN adduser -D -u 1000 botuser && \
-    chown -R botuser:botuser /app
-
 # Copy Python dependencies from builder stage
-COPY --from=builder /root/.local /home/botuser/.local
+COPY --from=builder /root/.local /root/.local
 
 # Make sure scripts in .local are usable
-ENV PATH=/home/botuser/.local/bin:$PATH
+ENV PATH=/root/.local/bin:$PATH
 
 # Copy application code
-COPY --chown=botuser:botuser inet_scraper.py .
-COPY --chown=botuser:botuser discord_bot.py .
-COPY --chown=botuser:botuser subscriber_db.py .
-COPY --chown=botuser:botuser main.py .
-
-# Switch to non-root user
-USER botuser
+COPY inet_scraper.py .
+COPY discord_bot.py .
+COPY subscriber_db.py .
+COPY main.py .
 
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1

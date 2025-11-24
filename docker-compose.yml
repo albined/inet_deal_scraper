@@ -8,6 +8,10 @@ services:
     
     env_file:
       - .env
+    
+    # Volume mapping for persistent data
+    volumes:
+      - ./data:/app/data
         
     # Logging configuration
     logging:

@@ -500,12 +500,29 @@ async def main():
     # Status provider function for Discord bot
     def get_status():
         """Provide current bot status information"""
-        return {
+        info = {
             'is_live': status_state['is_live'],
             'is_monitoring': status_state['is_monitoring'],
             'last_online': status_state['last_online'],
             'channel_name': status_state['channel_name']
         }
+
+        # Include YouTube monitor status if available
+        try:
+            # `youtube_monitor` is defined later in this scope; if present, include its state
+            if youtube_monitor is not None:
+                info['youtube_monitoring'] = getattr(youtube_monitor, 'is_monitoring', False)
+                # Active streams -> list of video ids
+                active_streams = list(getattr(youtube_monitor, 'active_streams', {}).keys())
+                info['youtube_active_streams'] = active_streams
+                # Count of seen links
+                info['youtube_seen_links'] = len(getattr(youtube_monitor, 'seen_links', set()))
+                info['youtube_current_date'] = getattr(youtube_monitor, 'current_date', None)
+        except NameError:
+            # youtube_monitor not defined yet
+            pass
+
+        return info
     
     # Initialize Discord bot (pass monitor reference and status provider)
     # Note: youtube_monitor will be set after initialization

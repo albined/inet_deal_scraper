@@ -2,6 +2,7 @@
 archive/
 .env
 subscribers.json
+data/
 
 # Python
 __pycache__/
