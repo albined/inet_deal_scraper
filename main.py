@@ -9,10 +9,14 @@ import os
 import asyncio
 import re
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from twitchio.ext import commands
 from fnmatch import fnmatch
+import yt_dlp
+import pytchat
+from pytchat import InvalidVideoIdException
+import time
 
 from inet_scraper import InetProductMonitor
 from discord_bot import InetDiscordBot
@@ -103,6 +107,242 @@ class TwitchStreamChecker:
         except requests.RequestException as e:
             print(f"⚠️ Error checking stream status: {e}")
             return False
+
+
+class YouTubeMonitor:
+    """Monitors YouTube channel for live streams and chat messages containing links"""
+    
+    def __init__(self, channel_url, link_template, inet_monitor, discord_bot, 
+                 stream_check_interval=600, chat_check_interval=5, 
+                 inactive_chat_interval=600, inactive_threshold=300):
+        """
+        Initialize the YouTube monitor
+        
+        Args:
+            channel_url: YouTube channel URL (e.g., "https://www.youtube.com/@inet")
+            link_template: Pattern for matching links (e.g., "https://www.inet.se/kampanj/*")
+            inet_monitor: Reference to InetProductMonitor instance
+            discord_bot: Reference to InetDiscordBot instance
+            stream_check_interval: How often to check for streams when not live (seconds)
+            chat_check_interval: How often to check chat when active (seconds)
+            inactive_chat_interval: How often to check chat when inactive (seconds)
+            inactive_threshold: Time without messages before considering chat inactive (seconds)
+        """
+        self.channel_url = channel_url
+        self.link_template = link_template
+        self.inet_monitor = inet_monitor
+        self.discord_bot = discord_bot
+        self.stream_check_interval = stream_check_interval
+        self.chat_check_interval = chat_check_interval
+        self.inactive_chat_interval = inactive_chat_interval
+        self.inactive_threshold = inactive_threshold
+        
+        # State tracking
+        self.seen_links = set()
+        self.current_date = date.today()
+        self.active_streams = {}  # video_id -> {'chat': pytchat_obj, 'last_message_time': timestamp}
+        self.is_monitoring = False
+        self.monitor_task = None
+        
+        # yt-dlp options
+        self.ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+        }
+    
+    def _check_date_reset(self):
+        """Check if it's a new day and reset seen links if needed"""
+        today = date.today()
+        if today != self.current_date:
+            print(f'📅 New day detected! Resetting YouTube seen links...')
+            self.seen_links.clear()
+            self.current_date = today
+    
+    def _get_live_video_id(self):
+        """
+        Check if the channel is live and return the video ID if so
+        
+        Returns:
+            str or None: Video ID if live, None otherwise
+        """
+        live_url = f"{self.channel_url}/live"
+        
+        try:
+            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                info = ydl.extract_info(live_url, download=False)
+                video_id = info.get('id')
+                if video_id:
+                    return video_id
+        except yt_dlp.utils.DownloadError:
+            # Not live or error occurred
+            pass
+        except Exception as e:
+            print(f'⚠️ Error checking YouTube live status: {e}')
+        
+        return None
+    
+    def _extract_links(self, message):
+        """Extract URLs from message that match the template"""
+        url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
+        urls = re.findall(url_pattern, message)
+        
+        matching_urls = []
+        for url in urls:
+            if fnmatch(url, self.link_template):
+                matching_urls.append(url)
+        
+        return matching_urls
+    
+    async def _scrape_and_post(self):
+        """Scrape for new products and post to Discord"""
+        try:
+            print(f'🔍 [YouTube] Scraping for new products...')
+            new_products = self.inet_monitor.check_for_new_products()
+            
+            if new_products:
+                print(f'📤 [YouTube] Posting {len(new_products)} new product(s) to Discord...')
+                await self.discord_bot.send_products(new_products)
+            else:
+                print('✓ [YouTube] No new products found')
+                
+        except Exception as e:
+            print(f'❌ [YouTube] Error during scrape: {e}')
+    
+    async def _monitor_chat(self, video_id):
+        """
+        Monitor a single video's chat for links
+        
+        Args:
+            video_id: YouTube video ID to monitor
+        """
+        try:
+            # Create chat connection
+            chat = pytchat.create(video_id=video_id)
+            self.active_streams[video_id] = {
+                'chat': chat,
+                'last_message_time': time.time()
+            }
+            
+            print(f'💬 [YouTube] Started monitoring chat for video: {video_id}')
+            
+            while chat.is_alive() and self.is_monitoring:
+                try:
+                    # Check if it's a new day
+                    self._check_date_reset()
+                    
+                    # Get chat messages
+                    data = chat.get()
+                    
+                    if data.items:
+                        # Update last message time
+                        self.active_streams[video_id]['last_message_time'] = time.time()
+                        
+                        for message in data.items:
+                            # Extract and process links
+                            links = self._extract_links(message.message)
+                            
+                            if links:
+                                print(f'🔗 [YouTube] [{message.author.name}]: Found {len(links)} link(s)')
+                                for link in links:
+                                    if link not in self.seen_links:
+                                        print(f'   🆕 [YouTube] New link: {link}')
+                                        self.seen_links.add(link)
+                                        self.inet_monitor.add_page(link)
+                                        # Trigger immediate scrape
+                                        await self._scrape_and_post()
+                                    else:
+                                        print(f'   ⏭️  [YouTube] Already tracking: {link}')
+                                        # Still scrape even if we've seen the link before
+                                        await self._scrape_and_post()
+                    
+                    # Determine sleep interval based on chat activity
+                    time_since_last_message = time.time() - self.active_streams[video_id]['last_message_time']
+                    
+                    if time_since_last_message > self.inactive_threshold:
+                        # Chat is inactive, check less frequently
+                        await asyncio.sleep(self.inactive_chat_interval)
+                    else:
+                        # Chat is active, check more frequently
+                        await asyncio.sleep(self.chat_check_interval)
+                
+                except Exception as e:
+                    print(f'⚠️ [YouTube] Error processing chat messages: {e}')
+                    await asyncio.sleep(self.chat_check_interval)
+            
+            # Cleanup
+            chat.terminate()
+            if video_id in self.active_streams:
+                del self.active_streams[video_id]
+            print(f'💤 [YouTube] Stopped monitoring chat for video: {video_id}')
+            
+        except InvalidVideoIdException:
+            print(f'❌ [YouTube] Invalid video ID: {video_id} - removing from monitoring')
+            if video_id in self.active_streams:
+                del self.active_streams[video_id]
+        except Exception as e:
+            print(f'❌ [YouTube] Error setting up chat monitor for {video_id}: {e}')
+            if video_id in self.active_streams:
+                del self.active_streams[video_id]
+    
+    async def _monitoring_loop(self):
+        """Main monitoring loop for YouTube streams"""
+        print(f'🎥 [YouTube] Starting monitoring loop for {self.channel_url}')
+        print(f'   Stream check interval: {self.stream_check_interval}s')
+        print(f'   Active chat interval: {self.chat_check_interval}s')
+        print(f'   Inactive chat interval: {self.inactive_chat_interval}s')
+        
+        while self.is_monitoring:
+            try:
+                # Check for date reset
+                self._check_date_reset()
+                
+                # Check if channel is live
+                video_id = self._get_live_video_id()
+                
+                if video_id:
+                    # Stream is live
+                    if video_id not in self.active_streams:
+                        print(f'🔴 [YouTube] Live stream detected! Video ID: {video_id}')
+                        # Start monitoring this stream's chat
+                        asyncio.create_task(self._monitor_chat(video_id))
+                    # If already monitoring, the chat task will continue
+                else:
+                    # No live stream currently
+                    pass
+                
+                # Wait before checking again
+                await asyncio.sleep(self.stream_check_interval)
+                
+            except Exception as e:
+                print(f'❌ [YouTube] Error in monitoring loop: {e}')
+                await asyncio.sleep(self.stream_check_interval)
+    
+    def start_monitoring(self):
+        """Start the YouTube monitoring"""
+        if not self.is_monitoring:
+            self.is_monitoring = True
+            self.monitor_task = asyncio.create_task(self._monitoring_loop())
+            print('✓ [YouTube] Monitoring started')
+    
+    def stop_monitoring(self):
+        """Stop the YouTube monitoring"""
+        print('⏸️  [YouTube] Stopping monitoring...')
+        self.is_monitoring = False
+        
+        # Terminate all active chat monitors
+        for video_id, stream_info in list(self.active_streams.items()):
+            try:
+                stream_info['chat'].terminate()
+            except:
+                pass
+        
+        self.active_streams.clear()
+        
+        if self.monitor_task and not self.monitor_task.done():
+            self.monitor_task.cancel()
+        
+        print('✓ [YouTube] Monitoring stopped')
 
 
 class InetMonitorBot(commands.Bot):
@@ -221,14 +461,23 @@ async def main():
     scrape_interval = int(os.getenv('SCRAPE_INTERVAL', 120))
     link_template = os.getenv('LINK_TEMPLATE', 'https://www.inet.se/kampanj/*')
     
+    # YouTube configuration
+    youtube_channel_url = os.getenv('YOUTUBE_CHANNEL_URL', 'https://www.youtube.com/@inet')
+    youtube_stream_check_interval = int(os.getenv('YOUTUBE_STREAM_CHECK_INTERVAL', 600))
+    youtube_chat_check_interval = int(os.getenv('YOUTUBE_CHAT_CHECK_INTERVAL', 5))
+    youtube_inactive_chat_interval = int(os.getenv('YOUTUBE_INACTIVE_CHAT_INTERVAL', 600))
+    youtube_inactive_threshold = int(os.getenv('YOUTUBE_INACTIVE_THRESHOLD', 300))
+    
     inet_email = os.getenv('INET_EMAIL')
     inet_password = os.getenv('INET_PASSWORD')
     
     print("📋 Configuration:")
     print(f"   Twitch Channel: {twitch_channel}")
-    print(f"   Online Check Interval: {online_check_interval}s")
+    print(f"   Twitch Online Check Interval: {online_check_interval}s")
     print(f"   Scrape Interval: {scrape_interval}s")
     print(f"   Link Template: {link_template}")
+    print(f"   YouTube Channel: {youtube_channel_url}")
+    print(f"   YouTube Stream Check Interval: {youtube_stream_check_interval}s")
     print()
     
     # Initialize components
@@ -259,10 +508,30 @@ async def main():
         }
     
     # Initialize Discord bot (pass monitor reference and status provider)
+    # Note: youtube_monitor will be set after initialization
     discord_bot = InetDiscordBot(
         inet_monitor=inet_monitor,
         status_provider=get_status
     )
+    
+    # Initialize Twitch components
+    token_manager = TwitchTokenManager(twitch_refresh_token)
+    stream_checker = TwitchStreamChecker(twitch_client_id, twitch_client_secret)
+    
+    # Initialize YouTube monitor
+    youtube_monitor = YouTubeMonitor(
+        channel_url=youtube_channel_url,
+        link_template=link_template,
+        inet_monitor=inet_monitor,
+        discord_bot=discord_bot,
+        stream_check_interval=youtube_stream_check_interval,
+        chat_check_interval=youtube_chat_check_interval,
+        inactive_chat_interval=youtube_inactive_chat_interval,
+        inactive_threshold=youtube_inactive_threshold
+    )
+    
+    # Set youtube_monitor reference in Discord bot after initialization
+    discord_bot.youtube_monitor = youtube_monitor
     
     # Start Discord bot in background
     discord_task = asyncio.create_task(discord_bot.start())
@@ -274,9 +543,8 @@ async def main():
     print("✓ All components initialized!")
     print()
     
-    # Initialize Twitch components
-    token_manager = TwitchTokenManager(twitch_refresh_token)
-    stream_checker = TwitchStreamChecker(twitch_client_id, twitch_client_secret)
+    # Start YouTube monitoring (runs independently)
+    youtube_monitor.start_monitoring()
     
     # Main monitoring loop
     twitch_bot = None
@@ -352,6 +620,9 @@ async def main():
             
     except KeyboardInterrupt:
         print("\n\n👋 Shutting down gracefully...")
+        
+        # Cleanup YouTube monitor
+        youtube_monitor.stop_monitoring()
         
         # Cleanup Twitch bot
         if twitch_bot:

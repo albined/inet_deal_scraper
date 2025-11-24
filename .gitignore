@@ -1,6 +1,7 @@
 # Project specific
 archive/
 .env
+subscribers.json
 
 # Python
 __pycache__/

@@ -5,6 +5,8 @@ from typing import Dict, Optional
 import os
 from dotenv import load_dotenv
 import asyncio
+import re
+from subscriber_db import SubscriberDatabase
 
 class InetDiscordBot:
     """
@@ -12,30 +14,31 @@ class InetDiscordBot:
     
     Features:
     - Posts products with embedded images and formatted information
-    - Slash commands: /start, /stop, /status, /help, /links, /resend, /clear
-    - Can be toggled on/off without restarting
+    - Slash commands: /subscribe, /unsubscribe, /status, /help, /links, /resend, /clear, /addlink
+    - Subscription-based notifications (channels and DMs)
+    - Persistent subscriber storage across restarts
     """
     
-    def __init__(self, token: Optional[str] = None, channel_id: Optional[int] = None, inet_monitor=None, status_provider=None):
+    def __init__(self, token: Optional[str] = None, inet_monitor=None, youtube_monitor=None, status_provider=None, db_path: str = "subscribers.json"):
         """
         Initialize the Discord bot
         
         Args:
             token: Discord bot token (loads from .env if not provided)
-            channel_id: Discord channel ID to post to (loads from .env if not provided)
             inet_monitor: Reference to InetProductMonitor instance (optional)
+            youtube_monitor: Reference to YouTubeMonitor instance (optional)
             status_provider: Callable that returns status information (optional)
+            db_path: Path to subscriber database file (default: subscribers.json)
         """
         # Load environment variables if not provided
-        if token is None or channel_id is None:
+        if token is None:
             load_dotenv()
             token = token or os.getenv('DISCORD_TOKEN_URL')
-            channel_id = channel_id or int(os.getenv('DISCORD_CHANNEL_ID'))
         
         self.token = token
-        self.channel_id = channel_id
-        self.enabled = True  # Bot starts enabled
+        self.subscriber_db = SubscriberDatabase(db_path)  # Persistent subscriber storage
         self.inet_monitor = inet_monitor  # Reference to monitor for checking pages
+        self.youtube_monitor = youtube_monitor  # Reference to YouTube monitor
         self.status_provider = status_provider  # Function to get additional status info
         
         # Set up Discord bot with message content intent
@@ -53,8 +56,7 @@ class InetDiscordBot:
         @self.bot.event
         async def on_ready():
             print(f'✓ Discord bot logged in as {self.bot.user}')
-            print(f'✓ Target channel ID: {self.channel_id}')
-            print(f'✓ Bot is {"ENABLED" if self.enabled else "DISABLED"}')
+            print(f'✓ Subscribers loaded: {self.subscriber_db.get_count()}')
             
             # Sync slash commands
             try:
@@ -66,38 +68,57 @@ class InetDiscordBot:
     def _register_commands(self):
         """Register bot slash commands"""
         
-        @self.bot.tree.command(name='start', description='Enable product notifications')
-        async def start_command(interaction: discord.Interaction):
-            """Enable the bot to send product notifications"""
-            if self.enabled:
-                await interaction.response.send_message("✓ Bot is already **enabled** and sending notifications!")
+        @self.bot.tree.command(name='subscribe', description='Subscribe to product notifications')
+        async def subscribe_command(interaction: discord.Interaction):
+            """Subscribe the current channel or DM to product notifications"""
+            # Get the target ID (channel or DM)
+            target_id = interaction.channel_id
+            
+            # Check if already subscribed
+            if self.subscriber_db.is_subscribed(target_id):
+                await interaction.response.send_message("✓ This location is already **subscribed** to notifications!")
             else:
-                self.enabled = True
-                await interaction.response.send_message("✅ Bot **enabled**! Will now send product notifications.")
-                print("Bot enabled by user command")
+                self.subscriber_db.add_subscriber(target_id)
+                location_type = "DM" if isinstance(interaction.channel, discord.DMChannel) else "channel"
+                await interaction.response.send_message(f"✅ **Subscribed!** This {location_type} will now receive product notifications.")
+                print(f"New subscriber: {target_id} ({location_type})")
         
-        @self.bot.tree.command(name='stop', description='Disable product notifications')
-        async def stop_command(interaction: discord.Interaction):
-            """Disable the bot from sending product notifications"""
-            if not self.enabled:
-                await interaction.response.send_message("✓ Bot is already **disabled**.")
+        @self.bot.tree.command(name='unsubscribe', description='Unsubscribe from product notifications')
+        async def unsubscribe_command(interaction: discord.Interaction):
+            """Unsubscribe the current channel or DM from product notifications"""
+            # Get the target ID (channel or DM)
+            target_id = interaction.channel_id
+            
+            # Check if subscribed
+            if not self.subscriber_db.is_subscribed(target_id):
+                await interaction.response.send_message("✓ This location is not subscribed to notifications.")
             else:
-                self.enabled = False
-                await interaction.response.send_message("⏸️ Bot **disabled**. Product notifications paused.")
-                print("Bot disabled by user command")
+                self.subscriber_db.remove_subscriber(target_id)
+                location_type = "DM" if isinstance(interaction.channel, discord.DMChannel) else "channel"
+                await interaction.response.send_message(f"✅ **Unsubscribed!** This {location_type} will no longer receive product notifications.")
+                print(f"Unsubscribed: {target_id} ({location_type})")
         
         @self.bot.tree.command(name='status', description='Check bot status and system information')
         async def status_command(interaction: discord.Interaction):
             """Check bot status and system information"""
+            # Get current channel/DM subscription status
+            target_id = interaction.channel_id
+            is_subscribed = self.subscriber_db.is_subscribed(target_id)
+            
             # Create an embed for better formatting
             embed = discord.Embed(
                 title="🤖 Bot Status",
-                color=discord.Color.green() if self.enabled else discord.Color.red()
+                color=discord.Color.green() if is_subscribed else discord.Color.orange()
             )
             
-            # Bot notification status
-            bot_status = "**ENABLED** ✅" if self.enabled else "**DISABLED** ⏸️"
-            embed.add_field(name="Notifications", value=bot_status, inline=False)
+            # Current location subscription status
+            location_type = "DM" if isinstance(interaction.channel, discord.DMChannel) else "channel"
+            subscription_status = f"**SUBSCRIBED** ✅" if is_subscribed else f"**NOT SUBSCRIBED** ❌"
+            embed.add_field(name=f"This {location_type}", value=subscription_status, inline=False)
+            
+            # Total subscribers
+            total_subscribers = self.subscriber_db.get_count()
+            embed.add_field(name="📢 Total Subscribers", value=str(total_subscribers), inline=True)
             
             # Get additional status from provider if available
             if self.status_provider:
@@ -142,23 +163,28 @@ class InetDiscordBot:
             help_text = """
 **🤖 Inet Product Drop Bot**
 
-I monitor Inet.se for new products and deals, and post them here automatically!
+I monitor Inet.se for new products and deals, and post them to all subscribed channels and DMs!
 
 **Commands:**
-• `/start` - Enable product notifications
-• `/stop` - Disable product notifications
-• `/status` - Check if bot is enabled/disabled
+• `/subscribe` - Subscribe this channel/DM to notifications
+• `/unsubscribe` - Unsubscribe this channel/DM from notifications
+• `/status` - Check subscription status and bot information
 • `/links` - Show all campaign links being monitored
+• `/addlink <link>` - Manually add a YouTube stream link to monitor
 • `/resend` - Resend all tracked products
 • `/clear [amount]` - Clear messages (default: 100)
 • `/help` - Show this help message
 
 **How it works:**
-When enabled, I'll automatically post new products with:
-✓ Product name (clickable link)
-✓ Product image
-✓ Pricing information
-✓ Discount percentage (if applicable)
+1. Use `/subscribe` in any channel or DM to receive notifications
+2. I'll automatically post new products with:
+   ✓ Product name (clickable link)
+   ✓ Product image
+   ✓ Pricing information
+   ✓ Discount percentage (if applicable)
+3. Use `/unsubscribe` to stop receiving notifications
+
+**Note:** Subscriptions are saved and persist across bot restarts!
 
 Stay tuned for great deals! 🎉
             """
@@ -224,6 +250,61 @@ Stay tuned for great deals! 🎉
                     await interaction.followup.send(f"❌ Error clearing messages: {e}", ephemeral=True)
                 else:
                     await interaction.response.send_message(f"❌ Error clearing messages: {e}", ephemeral=True)
+        
+        @self.bot.tree.command(name='addlink', description='Manually add a YouTube stream link to monitor')
+        @app_commands.describe(link='YouTube video/stream URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)')
+        async def addlink_command(interaction: discord.Interaction, link: str):
+            """Manually add a YouTube stream link to monitor"""
+            if not self.youtube_monitor:
+                await interaction.response.send_message("❌ YouTube monitoring is not enabled on this bot.", ephemeral=True)
+                return
+            
+            # Extract video ID from various YouTube URL formats
+            video_id = None
+            
+            # Pattern 1: https://www.youtube.com/watch?v=VIDEO_ID
+            match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})', link)
+            if match:
+                video_id = match.group(1)
+            
+            # Pattern 2: https://www.youtube.com/live/VIDEO_ID
+            if not video_id:
+                match = re.search(r'youtube\.com/live/([a-zA-Z0-9_-]{11})', link)
+                if match:
+                    video_id = match.group(1)
+            
+            if not video_id:
+                await interaction.response.send_message(
+                    "❌ **Invalid YouTube URL**\n\n"
+                    "Please provide a valid YouTube video/stream URL:\n"
+                    "• `https://www.youtube.com/watch?v=VIDEO_ID`\n"
+                    "• `https://youtu.be/VIDEO_ID`\n"
+                    "• `https://www.youtube.com/live/VIDEO_ID`",
+                    ephemeral=True
+                )
+                return
+            
+            # Check if already monitoring this video
+            if video_id in self.youtube_monitor.active_streams:
+                await interaction.response.send_message(
+                    f"ℹ️ Already monitoring stream: `{video_id}`\n"
+                    f"Link: https://www.youtube.com/watch?v={video_id}",
+                    ephemeral=True
+                )
+                return
+            
+            # Start monitoring this video
+            await interaction.response.send_message(
+                f"✅ **Added YouTube stream to monitoring!**\n\n"
+                f"Video ID: `{video_id}`\n"
+                f"Link: https://www.youtube.com/watch?v={video_id}\n\n"
+                f"🔍 Starting chat monitoring for campaign links...",
+                ephemeral=False
+            )
+            
+            # Create monitoring task
+            asyncio.create_task(self.youtube_monitor._monitor_chat(video_id))
+            print(f"📺 [Discord Command] Manually added YouTube video for monitoring: {video_id}")
         
         @self.bot.tree.command(name='resend', description='Resend all currently tracked products')
         async def resend_command(interaction: discord.Interaction):
@@ -322,38 +403,56 @@ Stay tuned for great deals! 🎉
     
     async def send_products(self, products: Dict[str, Dict]):
         """
-        Send product notifications to Discord
+        Send product notifications to all subscribed channels and DMs
         
         Args:
             products: Dictionary of products (product_id -> product_info)
         """
-        if not self.enabled:
-            print(f"⏸️  Bot is disabled. Skipping {len(products)} product(s).")
-            return
-        
         if not products:
             print("No products to send.")
             return
         
-        # Get the target channel
-        channel = self.bot.get_channel(self.channel_id)
-        if not channel:
-            print(f"❌ Could not find channel with ID {self.channel_id}")
+        # Get all subscribers
+        subscribers = self.subscriber_db.get_all_subscribers()
+        
+        if not subscribers:
+            print(f"⚠️  No subscribers yet. {len(products)} product(s) not sent.")
             return
         
-        print(f"📤 Sending {len(products)} product(s) to Discord...")
+        print(f"📤 Sending {len(products)} product(s) to {len(subscribers)} subscriber(s)...")
         
-        for product_id, product in products.items():
+        # Send to each subscriber
+        for subscriber_id in subscribers:
             try:
-                embed = self._create_product_embed(product)
-                await channel.send(embed=embed)
-                print(f"   ✓ Sent: {product.get('name', 'Unknown')}")
+                # Get the channel or user
+                channel = self.bot.get_channel(subscriber_id)
                 
-                # Small delay to avoid rate limiting
-                await asyncio.sleep(1)
+                # If not a channel, try to get as user (for DMs)
+                if not channel:
+                    user = await self.bot.fetch_user(subscriber_id)
+                    if user:
+                        channel = user.dm_channel or await user.create_dm()
+                
+                if not channel:
+                    print(f"   ⚠️  Could not find subscriber {subscriber_id}, skipping")
+                    continue
+                
+                # Send all products to this subscriber
+                for product_id, product in products.items():
+                    try:
+                        embed = self._create_product_embed(product)
+                        await channel.send(embed=embed)
+                        
+                        # Small delay to avoid rate limiting
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as e:
+                        print(f"   ❌ Error sending product {product_id} to {subscriber_id}: {e}")
+                
+                print(f"   ✓ Sent {len(products)} product(s) to subscriber {subscriber_id}")
                 
             except Exception as e:
-                print(f"   ❌ Error sending product {product_id}: {e}")
+                print(f"   ❌ Error accessing subscriber {subscriber_id}: {e}")
     
     def run(self):
         """Start the Discord bot (blocking)"""
@@ -374,7 +473,7 @@ Stay tuned for great deals! 🎉
         return self.bot.is_ready()
     
     def __repr__(self):
-        return f"InetDiscordBot(channel_id={self.channel_id}, enabled={self.enabled})"
+        return f"InetDiscordBot(subscribers={self.subscriber_db.get_count()})"
 
 
 # Example usage

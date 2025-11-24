@@ -4,3 +4,5 @@ python-dotenv
 beautifulsoup4
 cloudscraper
 discord.py
+yt-dlp
+pytchat
