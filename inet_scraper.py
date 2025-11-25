@@ -61,20 +61,27 @@ class InetProductMonitor:
         """
         if url not in self.pages_to_check:
             self.pages_to_check.append(url)
-            print(f"✓ Added page: {url}")
+            print(f"✓ [Monitor] Added page: {url}")
+            print(f"   Total pages now tracked: {len(self.pages_to_check)}")
         else:
-            print(f"⚠ Page already in list: {url}")
+            print(f"⚠ [Monitor] Page already in list: {url}")
+            print(f"   Total pages tracked: {len(self.pages_to_check)}")
     
     def _check_date(self):
         """Check if it's a new day and reset if needed"""
         today = date.today()
         if today > self.current_date:
-            print(f"🗓️  New day detected! Clearing tracked products and pages.")
+            print(f"🗓️  [Monitor] Date changed: {self.current_date} -> {today}")
+            print(f"   Clearing {len(self.products)} tracked product(s)")
+            print(f"   Clearing {len(self.pages_to_check)} tracked page(s)")
             self.products = {}
             self.pages_to_check = []
+            # Clear pages daily to prevent accumulating expired campaigns
+            # If a campaign is still active, it will be re-posted in today's stream
             self.current_date = today
-            print("🔄 Re-authenticating with fresh session...")
+            print("🔄 [Monitor] Re-authenticating with fresh session...")
             self._login()
+            print("✅ [Monitor] Ready for new day - waiting for campaign links...")
     
     def _fetch_page(self, url: str) -> str:
         """Fetch HTML content from a URL"""
@@ -286,10 +293,17 @@ class InetProductMonitor:
         Returns:
             Dictionary with new products only (product_id -> product_info)
         """
+        print(f"\n{'='*60}")
+        print(f"[Monitor] Starting product check")
+        print(f"   Date: {date.today()}")
+        print(f"   Pages to check: {len(self.pages_to_check)}")
+        print(f"   Products already tracked: {len(self.products)}")
+        print(f"{'='*60}")
+        
         self._check_date()
         
         if not self.pages_to_check:
-            print("⚠ No pages to check. Use add_page() to add URLs.")
+            print("⚠ [Monitor] No pages to check. Use add_page() to add URLs.")
             return {}
         
         new_products = {}

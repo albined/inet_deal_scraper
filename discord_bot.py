@@ -188,15 +188,14 @@ class InetDiscordBot:
         async def help_command(interaction: discord.Interaction):
             """Show help information"""
             help_text = """
-**🤖 Inet Product Drop Bot**
+**🤖 Inet Product Monitor Bot - Help**
 
-I monitor Inet.se for new products and deals, and post them to all subscribed channels and DMs!
-
-**Commands:**
-• `/subscribe` - Subscribe this channel/DM to notifications
-• `/unsubscribe` - Unsubscribe this channel/DM from notifications
-• `/status` - Check subscription status and bot information
+**Available Commands:**
+• `/subscribe` - Subscribe to product notifications (works in channels & DMs)
+• `/unsubscribe` - Unsubscribe from notifications
+• `/status` - Check bot status
 • `/links` - Show all campaign links being monitored
+• `/addcampaign <link>` - Manually add an Inet campaign link and scrape immediately
 • `/addlink <link>` - Manually add a YouTube stream link to monitor
 • `/resend` - Resend all tracked products
 • `/clear [amount]` - Clear messages (default: 100)
@@ -210,6 +209,7 @@ I monitor Inet.se for new products and deals, and post them to all subscribed ch
    ✓ Pricing information
    ✓ Discount percentage (if applicable)
 3. Use `/unsubscribe` to stop receiving notifications
+4. Use `/addcampaign` to manually add campaign links without waiting for streams
 
 **Note:** Subscriptions are saved and persist across bot restarts!
 
@@ -277,6 +277,68 @@ Stay tuned for great deals! 🎉
                     await interaction.followup.send(f"❌ Error clearing messages: {e}", ephemeral=True)
                 else:
                     await interaction.response.send_message(f"❌ Error clearing messages: {e}", ephemeral=True)
+        
+        @self.bot.tree.command(name='addcampaign', description='Manually add an Inet campaign link and scrape for products')
+        @app_commands.describe(link='Inet campaign URL (e.g., https://www.inet.se/kampanj/...)')
+        async def addcampaign_command(interaction: discord.Interaction, link: str):
+            """Manually add an Inet campaign link and scrape for products"""
+            if not self.inet_monitor:
+                await interaction.response.send_message("❌ Monitor not connected.", ephemeral=True)
+                return
+            
+            # Validate that it's an Inet URL
+            if not link.startswith('https://www.inet.se/'):
+                await interaction.response.send_message(
+                    "❌ **Invalid Inet URL**\n\n"
+                    "Please provide a valid Inet campaign URL:\n"
+                    "• `https://www.inet.se/kampanj/...`\n"
+                    "• `https://www.inet.se/...`",
+                    ephemeral=True
+                )
+                return
+            
+            # Check if already tracking
+            if link in self.inet_monitor.pages_to_check:
+                await interaction.response.send_message(
+                    f"ℹ️ Already tracking this campaign:\n{link}",
+                    ephemeral=True
+                )
+                return
+            
+            # Add the page and scrape
+            await interaction.response.defer()
+            
+            try:
+                self.inet_monitor.add_page(link)
+                
+                # Scrape for products immediately
+                print(f"🔍 [Discord Command] Scraping manually added campaign: {link}")
+                new_products = self.inet_monitor.check_for_new_products()
+                
+                if new_products:
+                    await interaction.followup.send(
+                        f"✅ **Added campaign and found {len(new_products)} product(s)!**\n\n"
+                        f"Campaign: {link}\n\n"
+                        f"📤 Posting products to subscribers..."
+                    )
+                    
+                    # Post products to all subscribers
+                    await self.send_products(new_products)
+                else:
+                    await interaction.followup.send(
+                        f"✅ **Added campaign to monitoring!**\n\n"
+                        f"Campaign: {link}\n\n"
+                        f"ℹ️ No new products found (they may have been tracked already)."
+                    )
+                
+                print(f"✓ [Discord Command] Successfully added campaign: {link}")
+                
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ **Error adding campaign:**\n```{str(e)}```",
+                    ephemeral=True
+                )
+                print(f"❌ [Discord Command] Error adding campaign: {e}")
         
         @self.bot.tree.command(name='addlink', description='Manually add a YouTube stream link to monitor')
         @app_commands.describe(link='YouTube video/stream URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)')

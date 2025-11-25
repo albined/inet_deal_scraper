@@ -113,6 +113,7 @@ class YouTubeMonitor:
     """Monitors YouTube channel for live streams and chat messages containing links"""
     
     def __init__(self, channel_url, link_template, inet_monitor, discord_bot, 
+                 shared_seen_links=None,
                  stream_check_interval=600, chat_check_interval=5, 
                  inactive_chat_interval=600, inactive_threshold=300):
         """
@@ -123,6 +124,7 @@ class YouTubeMonitor:
             link_template: Pattern for matching links (e.g., "https://www.inet.se/kampanj/*")
             inet_monitor: Reference to InetProductMonitor instance
             discord_bot: Reference to InetDiscordBot instance
+            shared_seen_links: Shared set for tracking links across platforms (optional)
             stream_check_interval: How often to check for streams when not live (seconds)
             chat_check_interval: How often to check chat when active (seconds)
             inactive_chat_interval: How often to check chat when inactive (seconds)
@@ -137,8 +139,8 @@ class YouTubeMonitor:
         self.inactive_chat_interval = inactive_chat_interval
         self.inactive_threshold = inactive_threshold
         
-        # State tracking
-        self.seen_links = set()
+        # State tracking - use shared links if provided
+        self.seen_links = shared_seen_links if shared_seen_links is not None else set()
         self.current_date = date.today()
         self.active_streams = {}  # video_id -> {'chat': pytchat_obj, 'last_message_time': timestamp}
         self.is_monitoring = False
@@ -155,9 +157,10 @@ class YouTubeMonitor:
         """Check if it's a new day and reset seen links if needed"""
         today = date.today()
         if today != self.current_date:
-            print(f'📅 New day detected! Resetting YouTube seen links...')
-            self.seen_links.clear()
+            print(f'📅 [YouTube] Date changed: {self.current_date} -> {today}')
             self.current_date = today
+            # Note: Don't clear seen_links here if using shared links
+            # The shared date reset function will handle it
     
     def _get_live_video_id(self):
         """
@@ -245,16 +248,26 @@ class YouTubeMonitor:
                             if links:
                                 print(f'🔗 [YouTube] [{message.author.name}]: Found {len(links)} link(s)')
                                 for link in links:
-                                    if link not in self.seen_links:
-                                        print(f'   🆕 [YouTube] New link: {link}')
+                                    is_new_link = link not in self.seen_links
+                                    is_new_page = link not in self.inet_monitor.pages_to_check
+                                    
+                                    print(f'   📎 [YouTube] Link: {link}')
+                                    print(f'      • New link today: {is_new_link}')
+                                    print(f'      • New page to track: {is_new_page}')
+                                    print(f'      • Total seen links: {len(self.seen_links)}')
+                                    print(f'      • Total pages tracked: {len(self.inet_monitor.pages_to_check)}')
+                                    
+                                    if is_new_link:
+                                        print(f'   ✅ [YouTube] Adding to seen links for today')
                                         self.seen_links.add(link)
+                                    
+                                    if is_new_page:
+                                        print(f'   ✅ [YouTube] Adding page to monitor')
                                         self.inet_monitor.add_page(link)
-                                        # Trigger immediate scrape
-                                        await self._scrape_and_post()
-                                    else:
-                                        print(f'   ⏭️  [YouTube] Already tracking: {link}')
-                                        # Still scrape even if we've seen the link before
-                                        await self._scrape_and_post()
+                                    
+                                    # Always scrape when a link is mentioned (might have new products)
+                                    print(f'   🔄 [YouTube] Triggering scrape...')
+                                    await self._scrape_and_post()
                     
                     # Determine sleep interval based on chat activity
                     time_since_last_message = time.time() - self.active_streams[video_id]['last_message_time']
@@ -348,7 +361,7 @@ class YouTubeMonitor:
 class InetMonitorBot(commands.Bot):
     """Twitch bot that monitors chat for Inet campaign links"""
     
-    def __init__(self, token_manager, channel, link_template, inet_monitor, discord_bot, scrape_interval):
+    def __init__(self, token_manager, channel, link_template, inet_monitor, discord_bot, scrape_interval, shared_seen_links=None):
         super().__init__(
             token=str(token_manager),
             prefix='!',
@@ -360,7 +373,8 @@ class InetMonitorBot(commands.Bot):
         self.inet_monitor = inet_monitor
         self.discord_bot = discord_bot
         self.scrape_interval = scrape_interval
-        self.seen_links = set()
+        # Use shared links if provided
+        self.seen_links = shared_seen_links if shared_seen_links is not None else set()
         self.scrape_task = None
         self.is_monitoring = False
     
@@ -384,18 +398,28 @@ class InetMonitorBot(commands.Bot):
         links = self._extract_links(message.content)
         
         if links:
-            print(f'🔗 [{message.author.name}]: Found {len(links)} link(s)')
+            print(f'🔗 [Twitch] [{message.author.name}]: Found {len(links)} link(s)')
             for link in links:
-                if link not in self.seen_links:
-                    print(f'   🆕 New link: {link}')
+                is_new_link = link not in self.seen_links
+                is_new_page = link not in self.inet_monitor.pages_to_check
+                
+                print(f'   📎 [Twitch] Link: {link}')
+                print(f'      • New link today: {is_new_link}')
+                print(f'      • New page to track: {is_new_page}')
+                print(f'      • Total seen links: {len(self.seen_links)}')
+                print(f'      • Total pages tracked: {len(self.inet_monitor.pages_to_check)}')
+                
+                if is_new_link:
+                    print(f'   ✅ [Twitch] Adding to seen links for today')
                     self.seen_links.add(link)
+                
+                if is_new_page:
+                    print(f'   ✅ [Twitch] Adding page to monitor')
                     self.inet_monitor.add_page(link)
-                    # Trigger immediate scrape
-                    await self._scrape_and_post()
-                else:
-                    print(f'   ⏭️  Already tracking: {link}')
-                    # Still scrape even if we've seen the link before
-                    await self._scrape_and_post()
+                
+                # Always scrape when a link is mentioned (might have new products)
+                print(f'   🔄 [Twitch] Triggering scrape...')
+                await self._scrape_and_post()
     
     def _extract_links(self, message):
         """Extract URLs from message that match the template"""
@@ -414,26 +438,27 @@ class InetMonitorBot(commands.Bot):
     async def _scrape_and_post(self):
         """Scrape for new products and post to Discord"""
         try:
-            print(f'\n🔍 Scraping for new products...')
+            print(f'\n🔍 [Twitch] Scraping for new products...')
             new_products = self.inet_monitor.check_for_new_products()
             
             if new_products:
-                print(f'📤 Posting {len(new_products)} new product(s) to Discord...')
+                print(f'📤 [Twitch] Posting {len(new_products)} new product(s) to Discord...')
                 await self.discord_bot.send_products(new_products)
             else:
-                print('✓ No new products found')
+                print('✓ [Twitch] No new products found')
                 
         except Exception as e:
-            print(f'❌ Error during scrape: {e}')
+            print(f'❌ [Twitch] Error during scrape: {e}')
     
     async def _periodic_scrape(self):
         """Periodically scrape for new products"""
-        print(f'⏰ Starting periodic scraping (every {self.scrape_interval} seconds)')
+        print(f'⏰ [Twitch] Starting periodic scraping (every {self.scrape_interval} seconds)')
         
         while self.is_monitoring:
             await asyncio.sleep(self.scrape_interval)
             
             if self.is_monitoring and self.inet_monitor.pages_to_check:
+                print(f'⏰ [Twitch] Periodic scrape triggered ({len(self.inet_monitor.pages_to_check)} page(s))')
                 await self._scrape_and_post()
     
     def stop_monitoring(self):
@@ -535,12 +560,29 @@ async def main():
     token_manager = TwitchTokenManager(twitch_refresh_token)
     stream_checker = TwitchStreamChecker(twitch_client_id, twitch_client_secret)
     
-    # Initialize YouTube monitor
+    # Shared link tracking across platforms (YouTube and Twitch)
+    shared_seen_links = set()
+    shared_current_date = date.today()
+    
+    def check_date_reset():
+        """Check if it's a new day and reset shared links if needed"""
+        nonlocal shared_current_date
+        today = date.today()
+        if today != shared_current_date:
+            print(f'📅 [GLOBAL] Date changed: {shared_current_date} -> {today}')
+            print(f'   Clearing {len(shared_seen_links)} seen link(s) from previous day')
+            print(f'   Note: Pages will be cleared by inet_monitor._check_date()')
+            shared_seen_links.clear()
+            shared_current_date = today
+            print(f'   ✓ Reset complete. Fresh start for today\'s campaigns!')
+    
+    # Initialize YouTube monitor with shared link tracking
     youtube_monitor = YouTubeMonitor(
         channel_url=youtube_channel_url,
         link_template=link_template,
         inet_monitor=inet_monitor,
         discord_bot=discord_bot,
+        shared_seen_links=shared_seen_links,
         stream_check_interval=youtube_stream_check_interval,
         chat_check_interval=youtube_chat_check_interval,
         inactive_chat_interval=youtube_inactive_chat_interval,
@@ -588,14 +630,16 @@ async def main():
                 from datetime import datetime
                 status_state['last_online'] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
                 
-                # Create and start Twitch bot
+                # Create and start Twitch bot with shared link tracking
+                check_date_reset()  # Check date before creating bot
                 twitch_bot = InetMonitorBot(
                     token_manager=token_manager,
                     channel=twitch_channel,
                     link_template=link_template,
                     inet_monitor=inet_monitor,
                     discord_bot=discord_bot,
-                    scrape_interval=scrape_interval
+                    scrape_interval=scrape_interval,
+                    shared_seen_links=shared_seen_links
                 )
                 
                 # Start the Twitch bot
@@ -631,6 +675,9 @@ async def main():
                 if not was_live:
                     # Only print this occasionally
                     pass
+            
+            # Check for date reset
+            check_date_reset()
             
             # Wait before next check
             await asyncio.sleep(online_check_interval)
